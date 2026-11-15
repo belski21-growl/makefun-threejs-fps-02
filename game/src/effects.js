@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Pooled visual effects: tracers, muzzle sparks, impact puffs, explosions and
 // falling snow. Fixed pools, no allocation in the hot loop — a fired effect reuses
-// the oldest slot. Snow is a single Points cloud whose vertices recycle.
+// the oldest slot. Snow is two Points clouds (near large flakes, far small ones)
+// whose vertices recycle.
 import * as THREE from 'three';
+import { createTextures } from './textures.js';
 
 const TRACERS = 24;
 const SPARKS = 40;
-const SNOWFLAKES = 500;
+const PUFFS = 12;
 
 export function createEffects(scene) {
+  const tex = createTextures(1337);
   // Tracers: thin stretched boxes, one per pool slot, hidden when idle.
   const tracers = [];
   const tracerMat = new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, opacity: 0.9 });
@@ -44,22 +47,54 @@ export function createEffects(scene) {
   scene.add(blastLight);
   let blastLife = 0;
 
-  // Snow: points drifting down inside a 70 x 24 x 70 box around the map.
-  const snowGeo = new THREE.BufferGeometry();
-  const snowPos = new Float32Array(SNOWFLAKES * 3);
-  const snowSpeed = new Float32Array(SNOWFLAKES);
-  for (let i = 0; i < SNOWFLAKES; i += 1) {
-    snowPos[i * 3] = (Math.random() - 0.5) * 70;
-    snowPos[i * 3 + 1] = Math.random() * 24;
-    snowPos[i * 3 + 2] = (Math.random() - 0.5) * 70;
-    snowSpeed[i] = 1.2 + Math.random() * 1.8;
+  // Snow: two layers for depth — near large flakes, far small ones — drifting
+  // down inside a 70 x 24 x 70 box around the map, vertices recycled.
+  function makeSnow(count, size, opacity) {
+    const geo = new THREE.BufferGeometry();
+    const pos = new Float32Array(count * 3);
+    const speed = new Float32Array(count);
+    for (let i = 0; i < count; i += 1) {
+      pos[i * 3] = (Math.random() - 0.5) * 70;
+      pos[i * 3 + 1] = Math.random() * 24;
+      pos[i * 3 + 2] = (Math.random() - 0.5) * 70;
+      speed[i] = 1.2 + Math.random() * 1.8;
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const points = new THREE.Points(geo, new THREE.PointsMaterial({
+      color: 0xeaf2f8, size, map: tex.flake, transparent: true, opacity,
+      depthWrite: false, sizeAttenuation: true,
+    }));
+    points.frustumCulled = false;
+    scene.add(points);
+    return { geo, pos, speed, count };
   }
-  snowGeo.setAttribute('position', new THREE.BufferAttribute(snowPos, 3));
-  const snow = new THREE.Points(snowGeo, new THREE.PointsMaterial({
-    color: 0xeaf2f8, size: 0.07, transparent: true, opacity: 0.65,
+  const snowNear = makeSnow(350, 0.14, 0.85);
+  const snowFar = makeSnow(700, 0.06, 0.55);
+
+  // Muzzle flash: one pooled point light + glow sprite, fired at any muzzle
+  // (player or bot) and decayed in step().
+  const muzzleLight = new THREE.PointLight(0xffc46b, 0, 10, 1.8);
+  scene.add(muzzleLight);
+  const muzzleSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex.glow, color: 0xffd27a, transparent: true, opacity: 0,
+    depthWrite: false, blending: THREE.AdditiveBlending,
   }));
-  snow.frustumCulled = false;
-  scene.add(snow);
+  muzzleSprite.scale.setScalar(0.9);
+  scene.add(muzzleSprite);
+  let muzzleLife = 0;
+
+  // Impact dust: pooled soft sprites that bloom and fade where a bullet
+  // strikes a wall — snow dust, not fire.
+  const puffs = [];
+  for (let i = 0; i < PUFFS; i += 1) {
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: tex.puff, transparent: true, opacity: 0, depthWrite: false,
+    }));
+    sprite.visible = false;
+    scene.add(sprite);
+    puffs.push({ sprite, life: 0 });
+  }
+  let puffIdx = 0;
 
   const tmpMid = new THREE.Vector3();
   const tmpDir = new THREE.Vector3();
@@ -102,6 +137,34 @@ export function createEffects(scene) {
     burst(pos, 24, 7, 5);
   }
 
+  function muzzle(pos) {
+    muzzleLight.position.copy(pos);
+    muzzleLight.intensity = 26;
+    muzzleSprite.position.copy(pos);
+    muzzleSprite.material.opacity = 0.9;
+    muzzleLife = 0.06;
+  }
+
+  function puff(pos) {
+    const slot = puffs[puffIdx];
+    puffIdx = (puffIdx + 1) % PUFFS;
+    slot.sprite.position.copy(pos);
+    slot.sprite.scale.setScalar(0.3);
+    slot.sprite.material.opacity = 0.55;
+    slot.sprite.visible = true;
+    slot.life = 0.6;
+  }
+
+  function stepSnow(layer, dt) {
+    const { pos, speed, count, geo } = layer;
+    for (let i = 0; i < count; i += 1) {
+      pos[i * 3 + 1] -= speed[i] * dt;
+      pos[i * 3] += Math.sin(pos[i * 3 + 1] * 0.7 + i) * dt * 0.4;
+      if (pos[i * 3 + 1] < 0) pos[i * 3 + 1] = 24;
+    }
+    geo.attributes.position.needsUpdate = true;
+  }
+
   function step(dt) {
     for (const slot of tracers) {
       if (slot.life <= 0) continue;
@@ -134,13 +197,26 @@ export function createEffects(scene) {
         blastLight.intensity = 0;
       }
     }
-    for (let i = 0; i < SNOWFLAKES; i += 1) {
-      snowPos[i * 3 + 1] -= snowSpeed[i] * dt;
-      snowPos[i * 3] += Math.sin(snowPos[i * 3 + 1] * 0.7 + i) * dt * 0.4;
-      if (snowPos[i * 3 + 1] < 0) snowPos[i * 3 + 1] = 24;
+    if (muzzleLife > 0) {
+      muzzleLife -= dt;
+      muzzleLight.intensity = Math.max(0, muzzleLife / 0.06) * 26;
+      muzzleSprite.material.opacity = Math.max(0, muzzleLife / 0.06) * 0.9;
+      if (muzzleLife <= 0) {
+        muzzleLight.intensity = 0;
+        muzzleSprite.material.opacity = 0;
+      }
     }
-    snowGeo.attributes.position.needsUpdate = true;
+    for (const slot of puffs) {
+      if (slot.life <= 0) continue;
+      slot.life -= dt;
+      const t = Math.max(0, slot.life / 0.6);
+      slot.sprite.scale.setScalar(0.3 + (1 - t) * 0.9);
+      slot.sprite.material.opacity = t * 0.55;
+      if (slot.life <= 0) slot.sprite.visible = false;
+    }
+    stepSnow(snowNear, dt);
+    stepSnow(snowFar, dt);
   }
 
-  return { tracer, burst, explosion, step };
+  return { tracer, burst, explosion, muzzle, puff, step };
 }

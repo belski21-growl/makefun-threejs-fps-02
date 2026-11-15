@@ -72,7 +72,12 @@ export function createInput(canvas, onLockChange) {
       return out;
     },
     requestLock() {
-      canvas.requestPointerLock();
+      // A denied/ungestured lock rejects (headless, permission) — swallow it:
+      // the game already hides the overlay and runs without the lock.
+      try {
+        const p = canvas.requestPointerLock();
+        if (p && p.catch) p.catch(() => {});
+      } catch { /* ignore */ }
     },
     releaseLock() {
       if (document.pointerLockElement) document.exitPointerLock();

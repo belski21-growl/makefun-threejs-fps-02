@@ -30,34 +30,78 @@ export function createBots(scene, world, mover, rng, api) {
     const group = new THREE.Group();
     const suit = new THREE.MeshStandardMaterial({
       color: new THREE.Color(team === 'raider' ? PALETTE.raider : PALETTE.warden),
-      roughness: 0.8, metalness: 0.05,
+      roughness: 0.75, metalness: 0.1,
+    });
+    const suitDark = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(team === 'raider' ? '#b34a1e' : '#2a6ea8'),
+      roughness: 0.8, metalness: 0.08,
     });
     const dark = new THREE.MeshStandardMaterial({ color: new THREE.Color('#141a22'), roughness: 0.7, metalness: 0.2 });
+    const plateMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(team === 'raider' ? '#ffd9b0' : '#cfeaff'),
+      roughness: 0.5, metalness: 0.3,
+    });
+    // Torso: tapered chest + plate, shoulder pads, backpack; head with a
+    // helmet shell and a glowing visor slit; arms angled forward to hold the
+    // gun; legs with boots. Team colour stays on the torso so the two teams
+    // still read at a glance.
     const torso = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.62, 0.3), suit);
     torso.position.y = 1.08;
+    const chest = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.34, 0.06), plateMat);
+    chest.position.set(0, 1.12, 0.17);
+    const padL = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 0.32), suitDark);
+    padL.position.set(-0.3, 1.36, 0);
+    const padR = padL.clone();
+    padR.position.x = 0.3;
+    const pack = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.44, 0.14), suitDark);
+    pack.position.set(0, 1.1, -0.22);
     const head = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.32, 0.32), dark);
     head.position.y = 1.58;
+    const helmet = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.14, 0.36), suitDark);
+    helmet.position.y = 1.72;
     const visor = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.08, 0.02),
       new THREE.MeshBasicMaterial({ color: team === 'raider' ? 0xffb27a : 0x9fdcff }));
     visor.position.set(0, 1.6, 0.17);
-    const legL = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.72, 0.2), dark);
-    legL.position.set(-0.14, 0.36, 0);
-    const legR = legL.clone();
-    legR.position.x = 0.14;
+    // Limbs pivot at hip/shoulder: geometry translated so the mesh origin is
+    // the joint, so the walk swing in stepBot rotates the limb, not its centre.
+    const legGeo = new THREE.BoxGeometry(0.18, 0.72, 0.2);
+    legGeo.translate(0, -0.36, 0);
+    const legL = new THREE.Mesh(legGeo, dark);
+    legL.position.set(-0.14, 0.72, 0);
+    const legR = new THREE.Mesh(legGeo, dark);
+    legR.position.set(0.14, 0.72, 0);
+    const bootGeo = new THREE.BoxGeometry(0.2, 0.1, 0.3);
+    const bootL = new THREE.Mesh(bootGeo, dark);
+    bootL.position.set(0, -0.68, 0.04);
+    legL.add(bootL);
+    const bootR = new THREE.Mesh(bootGeo, dark);
+    bootR.position.set(0, -0.68, 0.04);
+    legR.add(bootR);
+    const armGeo = new THREE.BoxGeometry(0.13, 0.52, 0.15);
+    armGeo.translate(0, -0.26, 0);
+    const armL = new THREE.Mesh(armGeo, suit);
+    armL.position.set(-0.32, 1.38, 0.14);
+    armL.rotation.x = -0.9;
+    const armR = new THREE.Mesh(armGeo, suit);
+    armR.position.set(0.32, 1.38, 0.14);
+    armR.rotation.x = -0.9;
     const gun = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.1, 0.62), dark);
     gun.position.set(0.2, 1.2, 0.3);
-    group.add(torso, head, visor, legL, legR, gun);
+    const gunBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.24, 6), dark);
+    gunBarrel.rotation.x = Math.PI / 2;
+    gunBarrel.position.set(0.2, 1.2, 0.68);
+    group.add(torso, chest, padL, padR, pack, head, helmet, visor, armL, armR, legL, legR, gun, gunBarrel);
     group.traverse((child) => {
       if (child.isMesh) {
         child.castShadow = true;
       }
     });
     scene.add(group);
-    return { group, torso, head };
+    return { group, torso, head, legL, legR, armL, armR };
   }
 
   function makeBot(team, index, name, gunId) {
-    const { group, torso, head } = buildMesh(team);
+    const { group, torso, head, legL, legR, armL, armR } = buildMesh(team);
     const bot = {
       id: `${team}-${index}`,
       name,
@@ -76,6 +120,11 @@ export function createBots(scene, world, mover, rng, api) {
       group,
       torso,
       head,
+      legL,
+      legR,
+      armL,
+      armR,
+      walkPhase: 0,
       hitMeshes: [torso, head],
       yaw: 0,
       gun: WEAPONS[gunId],
@@ -326,6 +375,15 @@ export function createBots(scene, world, mover, rng, api) {
     if (bot.carrier && bot.team === 'raider' && bomb.state === 'carried' && bomb.carrier === bot) {
       bot.state = 'plant';
     }
+    // Walk cycle (visual only): swing the legs and counter-swing the arms
+    // while the bot moves; ease back to neutral when it stops.
+    const hSpeed = Math.hypot(bot.body.velocity.x, bot.body.velocity.z);
+    if (hSpeed > 0.4) bot.walkPhase += dt * hSpeed * 2.4;
+    const swing = hSpeed > 0.4 ? Math.sin(bot.walkPhase) * 0.5 : 0;
+    bot.legL.rotation.x = swing;
+    bot.legR.rotation.x = -swing;
+    bot.armL.rotation.x = -0.9 - swing * 0.35;
+    bot.armR.rotation.x = -0.9 + swing * 0.35;
     bot.group.position.copy(bot.body.position);
     bot.group.rotation.y = bot.yaw;
   }

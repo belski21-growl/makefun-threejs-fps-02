@@ -19,10 +19,12 @@ import { createHud } from './hud.js';
 import { createInput } from './input.js';
 import { createAudio } from './audio.js';
 import { createEffects } from './effects.js';
+import { createPost } from './post.js';
 
 const FIXED_STEP = 1 / 60;
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
+const qualityLow = params.get('quality') === 'low';
 const seed = Number.parseInt(params.get('seed') ?? '1', 10) || 1;
 const rng = makeRng(seed);
 const errors = [];
@@ -34,7 +36,7 @@ window.addEventListener('error', (event) => {
 });
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -45,6 +47,23 @@ scene.background = new THREE.Color(PALETTE.canvas);
 scene.fog = new THREE.Fog(new THREE.Color(PALETTE.canvas), 35, 85);
 const camera = new THREE.PerspectiveCamera(74, window.innerWidth / window.innerHeight, 0.05, 200);
 scene.add(camera);
+
+// Post pipeline (bloom + ACES composite + vignette/grain). The composer owns
+// the tone curve, so the renderer runs un-tonemapped in that path; ?quality=low
+// skips the composer and renders straight to the canvas with ACES on.
+const post = qualityLow ? null : createPost(renderer, scene, camera);
+if (qualityLow) {
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.15;
+} else {
+  renderer.toneMapping = THREE.NoToneMapping;
+  const buf = renderer.getDrawingBufferSize(new THREE.Vector2());
+  post.setSize(buf.x, buf.y, 1);
+}
+function renderFrame() {
+  if (post) post.render();
+  else renderer.render(scene, camera);
+}
 
 const world = createWorld(scene);
 const mover = createMover(world.colliders);
@@ -407,10 +426,11 @@ function step(dt) {
     chargeMesh.visible = false;
   }
 
-  // Aurora ribbons drift slowly.
+  // Aurora ribbons drift slowly; the shader bands flow with the same clock.
   for (let i = 0; i < world.aurora.length; i += 1) {
     world.aurora[i].rotation.z = 0.12 * (i - 1) + Math.sin(elapsed * 0.05 + i * 2) * 0.03;
   }
+  if (world.auroraUniforms) world.auroraUniforms.uTime.value = elapsed;
 
   // HUD (cached writes — unchanged values never touch the DOM).
   hud.setHealth(playerFighter.health, playerFighter.armor);
@@ -445,7 +465,7 @@ function frame(now) {
     if (accumulator > FIXED_STEP * 5) accumulator = 0;
     syncCamera();
   }
-  renderer.render(scene, camera);
+  renderFrame();
 }
 
 function settle(steps) {
@@ -468,7 +488,7 @@ function paintTwiceThenReady() {
   function paint() {
     requestAnimationFrame(paint);
     syncCamera();
-    renderer.render(scene, camera);
+    renderFrame();
     painted += 1;
     if (painted === 2) {
       window.__shotReady = true;
@@ -549,6 +569,10 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  if (post) {
+    const buf = renderer.getDrawingBufferSize(new THREE.Vector2());
+    post.setSize(buf.x, buf.y, 1);
+  }
 });
 
 // Debug handle for smoke tests: phase, score, money, player position, captured errors.

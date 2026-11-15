@@ -85,6 +85,7 @@ export function createCombat(scene, world, effects, audio, rng, hooks) {
   function shoot(origin, dir, def, attacker) {
     const pellets = def.pellets ?? 1;
     let hitAny = false;
+    effects.muzzle(origin);
     for (let p = 0; p < pellets; p += 1) {
       const spreadDir = tmpDir.copy(dir);
       if (pellets > 1 || def.spread > 0.02) {
@@ -116,6 +117,7 @@ export function createCombat(scene, world, effects, audio, rng, hooks) {
         applyDamage(bestVictim, damage, attacker, bestHead);
       } else if (wall < def.range) {
         effects.burst(end, 4, 2, 1.5);
+        effects.puff(end);
       }
     }
     audio.shot(def.kind);
