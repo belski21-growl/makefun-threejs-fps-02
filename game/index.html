@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NORTHLIGHT — Aurora Relay</title>
+<style>
+  :root { --spread: 6px; --teal: #2fe6a8; --amber: #ffb35c; --red: #ff5a4e; --blue: #4fc3ff; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b1626;
+    font-family: "Segoe UI", system-ui, sans-serif; color: #e8f0f8; }
+  #game, #game canvas { width: 100%; height: 100%; display: block; }
+  .hidden { display: none !important; }
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+  /* Crosshair: four ticks that widen with spread. */
+  #crosshair { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
+  #crosshair i { position: absolute; background: #e8f0f8; box-shadow: 0 0 3px #000; }
+  #crosshair i:nth-child(1) { left: calc(-1px + var(--spread) * -1); top: -8px; width: 2px; height: 7px; transform: translateX(-100%); }
+  #crosshair i:nth-child(2) { left: var(--spread); top: -8px; width: 2px; height: 7px; }
+  #crosshair i:nth-child(3) { top: calc(-1px + var(--spread) * -1); left: -8px; height: 2px; width: 7px; transform: translateY(-100%); }
+  #crosshair i:nth-child(4) { top: var(--spread); left: -8px; height: 2px; width: 7px; }
+  #hitmarker { position: absolute; left: 50%; top: 50%; width: 26px; height: 26px;
+    transform: translate(-50%, -50%) rotate(45deg); border: 2px solid #fff; }
+  #hitmarker.kill { border-color: var(--red); width: 34px; height: 34px; }
+  #damage { position: absolute; inset: 0; box-shadow: inset 0 0 90px 30px rgba(255, 40, 30, 0.55);
+    opacity: 0; transition: opacity 0.4s; }
+  /* Bottom-left: health + armour. */
+  #vitals { position: absolute; left: 24px; bottom: 22px; }
+  #health-num { font-size: 44px; font-weight: 700; line-height: 1; }
+  #armor-num { font-size: 18px; color: var(--blue); }
+  #health-bar-wrap { width: 190px; height: 6px; background: rgba(255,255,255,0.15); margin-top: 6px; }
+  #health-bar { height: 100%; width: 100%; background: var(--teal); }
+  #vitals .label { font-size: 11px; letter-spacing: 2px; color: #9fb2c6; }
+  /* Bottom-right: weapon + ammo + money. */
+  #loadout { position: absolute; right: 24px; bottom: 22px; text-align: right; }
+  #weapon-name { font-size: 15px; letter-spacing: 1px; color: #cfe0ef; }
+  #ammo-mag { font-size: 44px; font-weight: 700; line-height: 1; }
+  #ammo-reserve { font-size: 18px; color: #9fb2c6; }
+  #grenade-count { font-size: 13px; color: var(--amber); margin-top: 2px; }
+  #money { font-size: 20px; font-weight: 700; color: var(--teal); margin-top: 6px; }
+  /* Top-center: timer + score. */
+  #topbar { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); text-align: center; }
+  #timer { font-size: 30px; font-weight: 700; }
+  #timer-phase { font-size: 11px; letter-spacing: 3px; color: var(--amber); }
+  #score-line { font-size: 15px; margin-top: 2px; }
+  #score-raider { color: #ff7a3c; font-weight: 700; }
+  #score-warden { color: var(--blue); font-weight: 700; }
+  #round-num { font-size: 11px; letter-spacing: 2px; color: #9fb2c6; }
+  #bomb-status { margin-top: 6px; font-size: 14px; font-weight: 700; letter-spacing: 1px; }
+  #bomb-status.bomb-planted { color: var(--red); animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0.35; } }
+  /* Killfeed top-right. */
+  #killfeed { position: absolute; top: 16px; right: 24px; text-align: right; font-size: 13px; }
+  .kill-row { background: rgba(10, 15, 22, 0.65); padding: 3px 8px; margin-bottom: 4px; border-radius: 3px; }
+  /* Defuse bar. */
+  #defuse { position: absolute; left: 50%; top: 62%; transform: translateX(-50%); width: 260px; text-align: center; }
+  #defuse .label { font-size: 12px; letter-spacing: 2px; margin-bottom: 5px; }
+  #defuse-bar { height: 8px; background: rgba(255,255,255,0.15); }
+  #defuse-fill { height: 100%; width: 0; background: var(--teal); }
+  /* Round banner. */
+  #banner { position: absolute; left: 50%; top: 24%; transform: translateX(-50%); text-align: center; }
+  #banner-title { font-size: 38px; font-weight: 800; letter-spacing: 4px; text-shadow: 0 2px 12px #000; }
+  #banner-sub { font-size: 15px; color: #cfe0ef; margin-top: 4px; text-shadow: 0 1px 6px #000; }
+  #spectate { position: absolute; left: 50%; top: 72%; transform: translateX(-50%);
+    font-size: 13px; letter-spacing: 2px; color: #ffb3ac; }
+  /* Buy menu. */
+  #buy-menu { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: 420px; background: rgba(8, 14, 22, 0.92); border: 1px solid #2a3648;
+    padding: 18px 20px; pointer-events: auto; border-radius: 6px; }
+  #buy-menu h2 { font-size: 16px; letter-spacing: 3px; margin-bottom: 4px; }
+  #buy-menu .sub { font-size: 12px; color: #9fb2c6; margin-bottom: 12px; }
+  #buy-money { color: var(--teal); font-weight: 700; }
+  .buy-row { display: flex; justify-content: space-between; align-items: center; margin: 6px 0; }
+  .buy-row button { flex: 1; text-align: left; background: #1d2836; color: #e8f0f8;
+    border: 1px solid #33445a; padding: 8px 10px; font-size: 14px; cursor: pointer; border-radius: 3px; }
+  .buy-row button:hover { background: #2a3648; border-color: var(--teal); }
+  .buy-price { width: 70px; text-align: right; color: var(--teal); font-weight: 700; }
+  #buy-close { margin-top: 12px; width: 100%; padding: 8px; background: #243144; color: #e8f0f8;
+    border: 1px solid #33445a; cursor: pointer; border-radius: 3px; font-size: 13px; }
+  /* Overlays. */
+  #overlay, #match-end { position: fixed; inset: 0; background: rgba(5, 9, 15, 0.82);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 10; pointer-events: auto; text-align: center; padding: 20px; }
+  #overlay-title, #match-end-title { font-size: 52px; font-weight: 800; letter-spacing: 8px; color: var(--teal); }
+  #overlay-sub { font-size: 15px; color: #cfe0ef; max-width: 560px; margin: 14px 0 8px; line-height: 1.5; }
+  #controls { font-size: 13px; color: #9fb2c6; line-height: 1.8; margin-bottom: 22px; }
+  #play-btn, #rematch-btn { padding: 14px 42px; font-size: 17px; font-weight: 700; letter-spacing: 3px;
+    background: var(--teal); color: #07130d; border: none; cursor: pointer; border-radius: 4px; }
+  #play-btn:hover, #rematch-btn:hover { filter: brightness(1.12); }
+  #match-end-score { font-size: 20px; margin: 12px 0 22px; }
+</style>
+</head>
+<body>
+<div id="game"></div>
+<div id="hud">
+  <div id="damage" class="hidden"></div>
+  <div id="crosshair"><i></i><i></i><i></i><i></i></div>
+  <div id="hitmarker" class="hidden"></div>
+  <div id="vitals">
+    <div class="label">HEALTH</div>
+    <div><span id="health-num">100</span> <span id="armor-num">0</span></div>
+    <div id="health-bar-wrap"><div id="health-bar"></div></div>
+  </div>
+  <div id="loadout">
+    <div id="weapon-name">Mako P9</div>
+    <div><span id="ammo-mag">12</span><span id="ammo-reserve"> / 48</span></div>
+    <div id="grenade-count">◉ ×0</div>
+    <div id="money">$800</div>
+  </div>
+  <div id="topbar">
+    <div id="timer">1:40</div>
+    <div id="timer-phase">BUY</div>
+    <div id="score-line"><span id="score-raider">0</span> — <span id="score-warden">0</span></div>
+    <div id="round-num">ROUND 1</div>
+    <div id="bomb-status"></div>
+  </div>
+  <div id="killfeed"></div>
+  <div id="defuse" class="hidden">
+    <div class="label">DEFUSING — HOLD E</div>
+    <div id="defuse-bar"><div id="defuse-fill"></div></div>
+  </div>
+  <div id="banner" class="hidden">
+    <div id="banner-title"></div>
+    <div id="banner-sub"></div>
+  </div>
+  <div id="spectate" class="hidden">YOU ARE DOWN — SPECTATING A TEAMMATE</div>
+  <div id="buy-menu" class="hidden">
+    <h2>BUY MENU <span style="float:right" id="buy-money">$800</span></h2>
+    <div class="sub">Press B to close. Weapons refill each round; grenades and kevlar are bought fresh.</div>
+    <div id="buy-list"></div>
+    <button id="buy-close">CLOSE [B]</button>
+  </div>
+</div>
+<div id="overlay">
+  <div id="overlay-title">NORTHLIGHT</div>
+  <div id="overlay-sub">Aurora Relay — Raiders plant the pulse charge at Beacon or Depot. Wardens hold the sites. First to 4 rounds.</div>
+  <div id="controls">WASD move · Mouse aim · Click shoot · Right-click aim (scoped) · R reload · B buy · G grenade · E plant / defuse · Ctrl crouch · Space jump · 1/2 weapons</div>
+  <button id="play-btn">CLICK TO PLAY</button>
+</div>
+<div id="match-end" class="hidden">
+  <div id="match-end-title"></div>
+  <div id="match-end-score"></div>
+  <button id="rematch-btn">PLAY AGAIN</button>
+</div>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three/three.module.min.js" } }
+</script>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
